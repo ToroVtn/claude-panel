@@ -1,0 +1,16 @@
+[package]
+name = "claude-panel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.45"
+notify = "8.2.0"
+ratatui = "0.30.2"
+serde_json = "1.0.151"
+trash = "5.2.9"
+ureq = "3.4.2"
+
+[profile.release]
+strip = true  # no debug symbols in the shipped binary
+lto = true    # optimise across crates: smaller and a bit faster
