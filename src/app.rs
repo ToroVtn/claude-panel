@@ -167,12 +167,14 @@ fn is_text_key(k: &KeyEvent) -> Option<char> {
     }
 }
 
-/// The `claude` executable on PATH. ponytail: on Windows npm installs a claude.cmd, which Command can't
-/// run directly; use `cmd /C claude` there if that's how it's installed.
+/// The `claude` executable on PATH, else in ~/.local/bin where the native installer puts it (launched from
+/// a desktop icon, PATH often lacks that). ponytail: on Windows npm installs a claude.cmd, which Command
+/// can't run directly; use `cmd /C claude` there if that's how it's installed.
 fn claude_bin() -> PathBuf {
     let names: &[&str] = if cfg!(windows) { &["claude.exe", "claude.cmd"] } else { &["claude"] };
     std::env::var_os("PATH").into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .chain([data::home().join(".local").join("bin")])
         .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
         .find(|p| p.is_file())
         .unwrap_or_else(|| PathBuf::from("claude"))

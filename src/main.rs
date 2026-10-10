@@ -1,8 +1,9 @@
 //! claude-panel: a terminal dashboard for Claude Code (plan limits, token usage, skills, plugins, MCP).
-//! Refreshes by itself whenever Claude Code writes its files. Run it, press q to quit.
+//! Refreshes by itself whenever Claude Code writes its files. Run it, press q to quit; `--uninstall` removes it.
 
 mod app;
 mod data;
+mod launcher;
 mod ui;
 
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
@@ -10,6 +11,11 @@ use ratatui::crossterm::execute;
 use std::time::{Duration, Instant};
 
 fn main() -> std::io::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("--uninstall") {
+        launcher::uninstall();
+        return Ok(());
+    }
+    launcher::install();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = app::App::new(tx); // first transcript scan happens here (~0.3s), before the screen switches
     app.start_watching();

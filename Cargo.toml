@@ -2,6 +2,20 @@
 name = "claude-panel"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal dashboard for Claude Code: plan limits, token usage, skills, plugins and MCP servers"
+license = "MIT"
+authors = ["torovtn"]
+repository = "https://github.com/ToroVtn/claude-panel"
+homepage = "https://github.com/ToroVtn/claude-panel"
+readme = "README.md"
+keywords = ["claude", "claude-code", "tui", "dashboard"]
+categories = ["command-line-utilities"]
+
+[package.metadata.wix]
+upgrade-guid = "860502AF-ACC3-4758-8126-5AA7ED0D10C6"
+path-guid = "BCF8B23B-0A5E-43BD-8B3D-D22FF3562AF6"
+license = false
+eula = false
 
 [dependencies]
 chrono = "0.4.45"
@@ -14,3 +28,8 @@ ureq = "3.4.2"
 [profile.release]
 strip = true  # no debug symbols in the shipped binary
 lto = true    # optimise across crates: smaller and a bit faster
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

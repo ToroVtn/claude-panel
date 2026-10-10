@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Panel
+GenericName=Claude Code Dashboard
+Comment=Plan limits, token usage, skills, plugins and MCP servers for Claude Code
+Icon=claude-panel
+Exec=claude-panel
+Terminal=true
+Categories=Development;ConsoleOnly;
+Keywords=claude;anthropic;tokens;usage;plugins

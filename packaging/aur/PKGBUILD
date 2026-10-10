@@ -1,0 +1,28 @@
+# Maintainer: torovtn <toribiovitonsconza@gmail.com>
+pkgname=claude-panel-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Terminal dashboard for Claude Code: plan limits, token usage, skills, plugins and MCP servers"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ToroVtn/claude-panel"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+provides=('claude-panel')
+conflicts=('claude-panel')
+_raw="https://raw.githubusercontent.com/ToroVtn/claude-panel/v$pkgver"
+source=("claude-panel-$pkgver.desktop::$_raw/assets/claude-panel.desktop"
+        "claude-panel-$pkgver.svg::$_raw/assets/claude-panel.svg")
+source_x86_64=("$url/releases/download/v$pkgver/claude-panel-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("$url/releases/download/v$pkgver/claude-panel-aarch64-unknown-linux-gnu.tar.xz")
+# filled in by `updpkgsums` once the release exists
+sha256sums=('SKIP' 'SKIP')
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  cd "claude-panel-$CARCH-unknown-linux-gnu"
+  install -Dm755 claude-panel "$pkgdir/usr/bin/claude-panel"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$srcdir/claude-panel-$pkgver.desktop" "$pkgdir/usr/share/applications/claude-panel.desktop"
+  install -Dm644 "$srcdir/claude-panel-$pkgver.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/claude-panel.svg"
+}
