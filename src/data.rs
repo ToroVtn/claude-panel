@@ -1,4 +1,4 @@
-//! Reading Claude Code's files: transcripts (token usage), skills, plugins, MCP servers, plan limits.
+//! Reading Claude Code's files: transcripts (token usage), skills, plugins, MCP servers, hooks, plan limits.
 //! Plain functions over plain data, no terminal code, so `cargo test` can check them on their own.
 
 use serde_json::Value;
@@ -567,6 +567,105 @@ pub fn load_mcp(cfg: &Value, plugins: &[Plugin]) -> Vec<Mcp> {
     rows
 }
 
+/// One hook command. `raw` is its JSON as written, so removing it finds exactly this entry.
+#[derive(Clone, Debug)]
+pub struct Hook {
+    pub id: String,
+    pub event: String,
+    pub matcher: String,
+    pub command: String, // or the prompt, for prompt hooks
+    pub scope: String,
+    pub place: String, // project path, "~/.claude" or the plugin
+    pub file: PathBuf,
+    pub raw: Value,
+    pub hint: String, // why it can't be removed here, or ""
+}
+
+pub const HOOK_EVENTS: [&str; 10] = ["PreToolUse", "PostToolUse", "PermissionRequest", "UserPromptSubmit", "Notification",
+                                     "Stop", "SubagentStop", "PreCompact", "SessionStart", "SessionEnd"];
+
+/// Hooks from settings files (user, each project's shared and local) and enabled plugins' hooks/hooks.json.
+pub fn load_hooks(cfg: &Value, settings: &Value, plugins: &[Plugin]) -> Vec<Hook> {
+    let mut rows = Vec::new();
+    let mut add = |file: PathBuf, json: &Value, scope: &str, place: &str, hint: String| {
+        for (event, groups) in json.get("hooks").and_then(Value::as_object).into_iter().flatten() {
+            for g in groups.as_array().into_iter().flatten() {
+                for (i, h) in g.get("hooks").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                    let command = match get_str(h, "command") { "" => get_str(h, "prompt"), c => c };
+                    rows.push(Hook { id: format!("{}|{event}|{}|{i}|{command}", file.display(), get_str(g, "matcher")),
+                                     event: event.clone(), matcher: get_str(g, "matcher").into(), command: command.into(),
+                                     scope: scope.into(), place: place.into(), file: file.clone(), raw: h.clone(), hint: hint.clone() });
+                }
+            }
+        }
+    };
+    add(claude_dir().join("settings.json"), settings, "user", "~/.claude", String::new());
+    for p in known_projects(cfg) {
+        for (scope, name) in [("project", "settings.json"), ("local", "settings.local.json")] {
+            let file = Path::new(&p).join(".claude").join(name);
+            add(file.clone(), &read_json(&file), scope, &p, String::new());
+        }
+    }
+    let mut seen = HashSet::new();
+    for p in plugins.iter().filter(|p| p.enabled && seen.insert(&p.name)) {
+        let file = p.path.join("hooks/hooks.json");
+        add(file.clone(), &read_json(&file), "plugin", &p.name,
+            format!("Part of the plugin {}. Disable or remove the plugin to drop its hooks.", p.name));
+    }
+    rows
+}
+
+/// Change a settings file's "hooks" and write it back. A file that exists but doesn't parse is refused:
+/// writing it would wipe whatever else is in there.
+fn edit_hooks(file: &Path, f: impl FnOnce(&mut serde_json::Map<String, Value>) -> Result<(), String>) -> Result<(), String> {
+    let mut root: Value = match fs::read(file) {
+        Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("{} isn't valid JSON ({e}); fix it first.", file.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Default::default()),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    let obj = root.as_object_mut().ok_or("settings file isn't a JSON object")?;
+    let hooks = obj.entry("hooks").or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut().ok_or("\"hooks\" in the settings file isn't an object")?;
+    f(hooks)?;
+    if hooks.is_empty() {
+        obj.remove("hooks");
+    }
+    fs::create_dir_all(file.parent().unwrap_or(Path::new("."))).map_err(|e| e.to_string())?;
+    // ponytail: plain write, not tmp+rename, so a symlinked settings.json (dotfile managers) stays a symlink
+    fs::write(file, serde_json::to_string_pretty(&root).unwrap_or_default() + "\n").map_err(|e| format!("{}: {e}", file.display()))
+}
+
+pub fn add_hook(file: &Path, event: &str, matcher: &str, command: &str) -> Result<(), String> {
+    edit_hooks(file, |hooks| {
+        let list = hooks.entry(event).or_insert_with(|| Value::Array(vec![])).as_array_mut().ok_or("hook list isn't an array")?;
+        let mut group = serde_json::Map::new();
+        if !matcher.is_empty() {
+            group.insert("matcher".into(), matcher.into());
+        }
+        group.insert("hooks".into(), serde_json::json!([{"type": "command", "command": command}]));
+        list.push(group.into());
+        Ok(())
+    })
+}
+
+/// Remove one hook; its group (and event) go too once empty.
+pub fn remove_hook(file: &Path, event: &str, matcher: &str, hook: &Value) -> Result<(), String> {
+    edit_hooks(file, |hooks| {
+        let gone = "That hook is no longer in the file.";
+        let list = hooks.get_mut(event).and_then(Value::as_array_mut).ok_or(gone)?;
+        list.iter_mut().filter(|g| get_str(g, "matcher") == matcher).find_map(|g| {
+            let hs = g.get_mut("hooks")?.as_array_mut()?;
+            hs.remove(hs.iter().position(|h| h == hook)?);
+            Some(())
+        }).ok_or(gone)?;
+        list.retain(|g| g.get("hooks").and_then(Value::as_array).is_none_or(|a| !a.is_empty()));
+        if list.is_empty() {
+            hooks.remove(event);
+        }
+        Ok(())
+    })
+}
+
 /// Copy a skill folder into a skills dir. Copy, not move: the original stays where it was.
 pub fn copy_skill(src: &Path, dest_root: &Path) -> Result<PathBuf, String> {
     if !src.join("SKILL.md").is_file() {
@@ -700,6 +799,27 @@ mod tests {
         assert!(d.join("dest/myskill/SKILL.md").is_file());
         assert!(copy_skill(&d.join("src/myskill"), &d.join("dest")).is_err()); // already exists
         assert!(copy_skill(&d.join("src"), &d.join("dest")).is_err()); // no SKILL.md
+    }
+
+    #[test]
+    fn hooks_add_and_remove_keep_the_rest_of_the_file() {
+        let f = tmp("hooks").join(".claude/settings.json");
+        assert!(add_hook(&f, "Stop", "", "echo hi").is_ok()); // creates the file
+        fs::write(&f, r#"{"model": "x", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "a"}]}]}}"#).unwrap();
+        add_hook(&f, "PreToolUse", "Bash", "b").unwrap();
+        let hooks = load_hooks(&json!({}), &read_json(&f), &[]);
+        assert_eq!(hooks.iter().map(|h| (h.event.as_str(), h.matcher.as_str(), h.command.as_str())).collect::<Vec<_>>(),
+                   [("Stop", "", "a"), ("PreToolUse", "Bash", "b")]);
+        remove_hook(&f, "Stop", "", &hooks[0].raw).unwrap();
+        assert!(remove_hook(&f, "Stop", "", &hooks[0].raw).is_err()); // already gone
+        let v = read_json(&f);
+        assert_eq!(v["model"], "x");
+        assert!(v["hooks"].get("Stop").is_none()); // emptied event dropped
+        remove_hook(&f, "PreToolUse", "Bash", &hooks[1].raw).unwrap();
+        assert!(read_json(&f).get("hooks").is_none());
+        fs::write(&f, "{broken").unwrap();
+        assert!(add_hook(&f, "Stop", "", "c").is_err()); // never overwrite a file we can't read
+        assert_eq!(fs::read_to_string(&f).unwrap(), "{broken");
     }
 
     #[test]

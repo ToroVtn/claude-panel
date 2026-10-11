@@ -1,4 +1,4 @@
-//! claude-panel: a terminal dashboard for Claude Code (plan limits, token usage, skills, plugins, MCP).
+//! claude-panel: a terminal dashboard for Claude Code (plan limits, token usage, skills, plugins, MCP, hooks).
 //! Refreshes by itself whenever Claude Code writes its files. Run it, press q to quit; `--uninstall` removes it.
 
 mod app;

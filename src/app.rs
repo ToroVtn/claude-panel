@@ -1,7 +1,7 @@
 //! App state and behaviour: what's loaded, what's selected, what each key/click does.
 //! Drawing lives in ui.rs; reading Claude Code's files lives in data.rs.
 
-use crate::data::{self, Day, Limit, Mcp, Plugin, Seg, Skill};
+use crate::data::{self, Day, Hook, Limit, Mcp, Plugin, Seg, Skill};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -27,8 +27,9 @@ pub enum Tab {
     Skills = 0,
     Plugins = 1,
     Mcp = 2,
+    Hooks = 3,
 }
-pub const TABS: [(Tab, &str); 3] = [(Tab::Skills, "Skills"), (Tab::Plugins, "Plugins"), (Tab::Mcp, "MCP")];
+pub const TABS: [(Tab, &str); 4] = [(Tab::Skills, "Skills"), (Tab::Plugins, "Plugins"), (Tab::Mcp, "MCP"), (Tab::Hooks, "Hooks")];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -73,7 +74,7 @@ pub struct Available {
 
 pub enum Popup {
     Confirm { title: String, lines: Vec<String>, action: Action },
-    Input { title: String, text: String },  // add skill: folder path
+    Input { title: String, text: String, next: InputFor },
     Pick { title: String, items: Vec<String>, values: Vec<String>, cursor: usize, next: PickFor },
     Catalog { filter: String, cursor: usize },
 }
@@ -81,12 +82,21 @@ pub enum Popup {
 pub enum Action {
     RemoveSkills(Vec<(String, PathBuf)>), // (name, folder)
     Uninstall { name: String, scope: String, project: String },
+    RemoveHook(Hook),
+}
+
+pub enum InputFor {
+    SkillPath,
+    HookMatcher(String),           // event
+    HookCommand(String, String),   // event, matcher
 }
 
 pub enum PickFor {
     SkillTarget(PathBuf),
     PluginScope(String),
     PluginProject(String, String),
+    HookEvent,
+    HookFile { event: String, matcher: String, command: String },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -114,9 +124,10 @@ pub struct App {
     pub skills: Vec<Skill>,
     pub plugins: Vec<Plugin>,
     pub mcp: Vec<Mcp>,
+    pub hooks: Vec<Hook>,
     pub projects: Vec<String>,
     pub available: Option<Vec<Available>>,
-    pub grids: [Grid; 3],
+    pub grids: [Grid; 4],
     pub tab: Tab,
     pub focus: Focus,
     pub usage: data::Usage,
@@ -157,6 +168,8 @@ pub fn columns(tab: Tab) -> Vec<Col> {
                              c("Project", Fill(2), false)],
         Tab::Mcp => vec![c("Name", Length(14), false), c("Scope", Length(8), false), c("Defined in", Fill(2), false),
                          c("Transport", Length(9), false), c("Command / URL", Fill(3), false)],
+        Tab::Hooks => vec![c("Event", Length(18), false), c("Matcher", Length(16), false), c("Scope", Length(8), false),
+                           c("Defined in", Fill(2), false), c("Command", Fill(3), false)],
     }
 }
 
@@ -188,7 +201,7 @@ pub fn open_folder(path: &Path) {
 impl App {
     pub fn new(tx: Sender<Msg>) -> Self {
         let mut app = App {
-            tx, cfg: Value::Null, skills: vec![], plugins: vec![], mcp: vec![], projects: vec![], available: None,
+            tx, cfg: Value::Null, skills: vec![], plugins: vec![], mcp: vec![], hooks: vec![], projects: vec![], available: None,
             grids: Default::default(), tab: Tab::Skills, focus: Focus::Table,
             usage: Default::default(), days: vec![], legend: vec![], group: Group::Projects, day: 0, seg: 0, days_offset: 0,
             limits: vec![], limits_note: String::new(), limits_live: false, details_scroll: 0,
@@ -196,8 +209,8 @@ impl App {
             hits: Default::default(), watcher: None, watched: HashSet::new(), pending: (false, false),
             changed_at: Instant::now(), limits_due: true, limits_at: None, loading_catalog: false,
         };
-        // default sorts: most used first (skills, plugins), by name (MCP)
-        (app.grids[0].sort, app.grids[1].sort, app.grids[2].asc) = (4, 3, true);
+        // default sorts: most used first (skills, plugins), by name (MCP), by event (hooks)
+        (app.grids[0].sort, app.grids[1].sort, app.grids[2].asc, app.grids[3].asc) = (4, 3, true, true);
         app.reload_config();
         app.reload_usage();
         app
@@ -211,6 +224,7 @@ impl App {
         self.plugins = data::load_plugins(&self.cfg, &settings);
         self.skills = data::load_skills(&self.cfg, &self.plugins);
         self.mcp = data::load_mcp(&self.cfg, &self.plugins);
+        self.hooks = data::load_hooks(&self.cfg, &settings, &self.plugins);
         self.projects = data::known_projects(&self.cfg);
         let ids: HashSet<String> = self.skills.iter().map(|s| s.id.clone()).collect();
         self.grids[0].marked.retain(|id| ids.contains(id)); // removed skills can't stay marked
@@ -224,7 +238,7 @@ impl App {
             let at = c.get("fetchedAtMs").and_then(Value::as_f64).unwrap_or(0.0);
             self.limits_note = format!("cached by Claude Code {}", data::ago(at));
         }
-        for t in [Tab::Skills, Tab::Plugins, Tab::Mcp] {
+        for (t, _) in TABS {
             self.rebuild(t);
         }
         self.sync_watches();
@@ -406,6 +420,7 @@ impl App {
             Tab::Skills => self.skills.len(),
             Tab::Plugins => self.plugins.len(),
             Tab::Mcp => self.mcp.len(),
+            Tab::Hooks => self.hooks.len(),
         }
     }
 
@@ -414,6 +429,7 @@ impl App {
             Tab::Skills => &self.skills[i].id,
             Tab::Plugins => &self.plugins[i].id,
             Tab::Mcp => &self.mcp[i].id,
+            Tab::Hooks => &self.hooks[i].id,
         }
     }
 
@@ -432,6 +448,11 @@ impl App {
             Tab::Mcp => {
                 let m = &self.mcp[i];
                 vec![m.name.clone(), m.scope.clone(), m.place.clone(), m.kind.clone(), m.target.clone()]
+            }
+            Tab::Hooks => {
+                let h = &self.hooks[i];
+                vec![h.event.clone(), if h.matcher.is_empty() { "*".into() } else { h.matcher.clone() },
+                     h.scope.clone(), h.place.clone(), h.command.clone()]
             }
         }
     }
@@ -569,6 +590,18 @@ impl App {
                 });
             }
             Tab::Mcp => {}
+            Tab::Hooks => {
+                let Some(i) = self.current() else { return };
+                let h = &self.hooks[i];
+                if !h.hint.is_empty() {
+                    return self.status = h.hint.clone();
+                }
+                self.popup = Some(Popup::Confirm {
+                    title: format!("Remove this {} hook?", h.event),
+                    lines: vec![h.command.clone(), String::new(), format!("From {}", h.file.display())],
+                    action: Action::RemoveHook(h.clone()),
+                });
+            }
         }
     }
 
@@ -588,6 +621,13 @@ impl App {
             Action::Uninstall { name, scope, project } => {
                 let msg = format!("Uninstalled {name}.");
                 self.cli(vec!["plugin".into(), "uninstall".into(), name, "--scope".into(), scope], &project, msg, false);
+            }
+            Action::RemoveHook(h) => {
+                self.status = match data::remove_hook(&h.file, &h.event, &h.matcher, &h.raw) {
+                    Ok(()) => format!("Removed the {} hook. New Claude Code sessions will pick it up.", h.event),
+                    Err(e) => e,
+                };
+                self.reload_config();
             }
         }
     }
@@ -636,6 +676,53 @@ impl App {
                                                 cursor: 0, next: PickFor::PluginProject(id, value) });
             }
             PickFor::PluginProject(id, scope) => self.install(id, scope, value),
+            PickFor::HookEvent => {
+                let title = format!("{value}: which tools/sources? (e.g. Bash or Write|Edit; empty = all)");
+                self.popup = Some(Popup::Input { title, text: String::new(), next: InputFor::HookMatcher(value) });
+            }
+            PickFor::HookFile { event, matcher, command } => {
+                self.status = match data::add_hook(Path::new(&value), &event, &matcher, &command) {
+                    Ok(()) => format!("Added the {event} hook to {value}. New Claude Code sessions will pick it up."),
+                    Err(e) => e,
+                };
+                self.reload_config();
+            }
+        }
+    }
+
+    /// Enter in a text popup: the next step, or the same popup again if the text won't do.
+    fn entered(&mut self, title: String, text: String, next: InputFor) -> Option<Popup> {
+        match next {
+            InputFor::SkillPath => {
+                // ~/ means home, like in a shell
+                let path = match text.strip_prefix("~/") { Some(rest) => data::home().join(rest), None => PathBuf::from(&text) };
+                if path.join("SKILL.md").is_file() {
+                    let mut values = vec!["user".to_string()];
+                    values.extend(self.projects.iter().cloned());
+                    let items = values.iter().map(|v| if v == "user" { "User: ~/.claude/skills (all projects)".into() } else { format!("Project: {v}") }).collect();
+                    Some(Popup::Pick { title: format!("Copy {} into", path.display()), items, values, cursor: 0, next: PickFor::SkillTarget(path) })
+                } else {
+                    self.status = format!("{} has no SKILL.md, so it isn't a skill folder.", path.display());
+                    Some(Popup::Input { title, text, next })
+                }
+            }
+            InputFor::HookMatcher(event) => Some(Popup::Input {
+                title: format!("{event} hook: command to run"), text: String::new(), next: InputFor::HookCommand(event, text.trim().into()),
+            }),
+            InputFor::HookCommand(..) if text.trim().is_empty() => Some(Popup::Input { title, text, next }),
+            InputFor::HookCommand(event, matcher) => {
+                let mut items = vec!["User: ~/.claude/settings.json (all projects)".to_string()];
+                let mut values = vec![data::claude_dir().join("settings.json").display().to_string()];
+                for p in &self.projects {
+                    let dir = Path::new(p).join(".claude");
+                    items.push(format!("Project, shared: {p}/.claude/settings.json"));
+                    values.push(dir.join("settings.json").display().to_string());
+                    items.push(format!("Project, just you: {p}/.claude/settings.local.json"));
+                    values.push(dir.join("settings.local.json").display().to_string());
+                }
+                Some(Popup::Pick { title: format!("Add the {event} hook to"), items, values, cursor: 0,
+                                   next: PickFor::HookFile { event, matcher, command: text.trim().into() } })
+            }
         }
     }
 
@@ -680,7 +767,7 @@ impl App {
                 self.focus = if self.focus == Focus::Usage { Focus::Table } else { Focus::Usage };
                 self.details_scroll = 0;
             }
-            KeyCode::Char(c @ '1'..='3') => {
+            KeyCode::Char(c @ '1'..='4') => {
                 self.tab = TABS[(c as u8 - b'1') as usize].0;
                 self.focus = Focus::Table;
                 self.details_scroll = 0;
@@ -761,14 +848,19 @@ impl App {
                     match self.tab {
                         Tab::Skills => open_folder(&self.skills[i].path),
                         Tab::Plugins => open_folder(&self.plugins[i].path),
+                        Tab::Hooks => open_folder(&self.hooks[i].file), // the file: opens in the default editor
                         Tab::Mcp => {}
                     }
                 }
             }
             KeyCode::Char('a') if skills => {
-                self.popup = Some(Popup::Input { title: "Add skill: folder that contains SKILL.md".into(), text: String::new() });
+                self.popup = Some(Popup::Input { title: "Add skill: folder that contains SKILL.md".into(), text: String::new(), next: InputFor::SkillPath });
             }
             KeyCode::Char('a') if self.tab == Tab::Plugins => self.open_catalog(),
+            KeyCode::Char('a') if self.tab == Tab::Hooks => {
+                let events: Vec<String> = data::HOOK_EVENTS.iter().map(|e| e.to_string()).collect();
+                self.popup = Some(Popup::Pick { title: "Add hook: run when".into(), items: events.clone(), values: events, cursor: 0, next: PickFor::HookEvent });
+            }
             _ => {}
         }
     }
@@ -801,27 +893,15 @@ impl App {
             }
             Popup::Confirm { .. } if esc || k.code == KeyCode::Char('n') => None,
             Popup::Input { .. } if esc => None,
-            Popup::Input { title, mut text } => match k.code {
-                KeyCode::Enter => {
-                    // ~/ means home, like in a shell
-                    let path = match text.strip_prefix("~/") { Some(rest) => data::home().join(rest), None => PathBuf::from(&text) };
-                    if path.join("SKILL.md").is_file() {
-                        let mut values = vec!["user".to_string()];
-                        values.extend(self.projects.iter().cloned());
-                        let items = values.iter().map(|v| if v == "user" { "User: ~/.claude/skills (all projects)".into() } else { format!("Project: {v}") }).collect();
-                        Some(Popup::Pick { title: format!("Copy {} into", path.display()), items, values, cursor: 0, next: PickFor::SkillTarget(path) })
-                    } else {
-                        self.status = format!("{} has no SKILL.md, so it isn't a skill folder.", path.display());
-                        Some(Popup::Input { title, text })
-                    }
-                }
+            Popup::Input { title, mut text, next } => match k.code {
+                KeyCode::Enter => self.entered(title, text, next),
                 KeyCode::Backspace => {
                     text.pop();
-                    Some(Popup::Input { title, text })
+                    Some(Popup::Input { title, text, next })
                 }
                 _ => {
                     text.extend(is_text_key(&k));
-                    Some(Popup::Input { title, text })
+                    Some(Popup::Input { title, text, next })
                 }
             },
             Popup::Pick { .. } if esc => None,

@@ -1,6 +1,6 @@
-# claude-panel
+  # claude-panel
 
-A terminal dashboard for Claude Code: plan limits, token usage, skills, plugins and MCP servers.
+A terminal dashboard for Claude Code: plan limits, token usage, skills, plugins, MCP servers and hooks.
 It refreshes by itself whenever Claude Code writes its files. It never calls a model, so it uses no tokens.
 
 ## Install

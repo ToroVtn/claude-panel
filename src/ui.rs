@@ -1,10 +1,10 @@
 //! Drawing. Layout (btop-style boxes):
 //!   ┌ Usage: plan limits, tokens by model, a bar per day ─────────┐
-//!   ├ 1 Skills │ 2 Plugins │ 3 MCP ──────────┬ Details ───────────┤
+//!   ├ 1 Skills │ 2 Plugins │ 3 MCP │ 4 Hooks ┬ Details ───────────┤
 //!   status line
 //! Also records where things landed (App::hits) so mouse clicks can be matched to them.
 
-use crate::app::{App, Focus, Group, Popup, Tab, TABS, columns};
+use crate::app::{App, Focus, Group, InputFor, Popup, Tab, TABS, columns};
 use crate::data::{self, Seg, grouped, short};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -169,7 +169,7 @@ fn draw_table(f: &mut Frame, app: &mut App, area: Rect) {
     title.pop();
     let tab = app.tab;
     let g = &app.grids[tab as usize]; // the field, not app.grid(): that would borrow all of app
-    let what = match tab { Tab::Skills => "skills", Tab::Plugins => "plugins", Tab::Mcp => "servers" };
+    let what = match tab { Tab::Skills => "skills", Tab::Plugins => "plugins", Tab::Mcp => "servers", Tab::Hooks => "hooks" };
     let mut info = format!(" {} of {} {what}", g.view.len(), app.len(tab));
     if tab == Tab::Plugins {
         info += &format!(" · {} enabled", app.plugins.iter().filter(|p| p.enabled).count());
@@ -292,6 +292,17 @@ fn draw_details(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.extend([kv("Scope", &*m.scope), kv("Defined in", &*m.place), kv("Transport", &*m.kind)]);
                 desc = m.target.clone();
             }
+            Tab::Hooks => {
+                let h = &app.hooks[i];
+                title = format!(" {} ", h.event);
+                lines.extend([kv("Matcher", if h.matcher.is_empty() { "* (all)" } else { &h.matcher }), kv("Scope", &*h.scope),
+                              kv("Type", data::get_str(&h.raw, "type")), kv("Timeout", h.raw.get("timeout").map(|t| t.to_string()).unwrap_or("default".into())),
+                              kv("File", h.file.display().to_string())]);
+                desc = h.command.clone();
+                if !h.hint.is_empty() {
+                    desc += &format!("\n\n{}", h.hint);
+                }
+            }
         }
     }
     if !desc.is_empty() {
@@ -310,9 +321,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         "Tab table · ↑↓ day · ←→ part · g group · r reload · q quit"
     } else {
         match app.tab {
-            Tab::Skills => "Tab usage · 1-3 tab · / search · Space mark · Shift+↑↓ range · d remove · a add · o open · s sort · q quit",
-            Tab::Plugins => "Tab usage · 1-3 tab · / search · Space on/off · d uninstall · a add · o open · s sort · q quit",
-            Tab::Mcp => "Tab usage · 1-3 tab · / search · s sort · q quit",
+            Tab::Skills => "Tab usage · 1-4 tab · / search · Space mark · Shift+↑↓ range · d remove · a add · o open · s sort · q quit",
+            Tab::Plugins => "Tab usage · 1-4 tab · / search · Space on/off · d uninstall · a add · o open · s sort · q quit",
+            Tab::Mcp => "Tab usage · 1-4 tab · / search · s sort · q quit",
+            Tab::Hooks => "Tab usage · 1-4 tab · / search · d remove · a add · o open file · s sort · q quit",
         }
     };
     let left = if app.searching {
@@ -343,10 +355,10 @@ fn draw_popup(f: &mut Frame, app: &App, area: Rect) {
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(text).block(boxed(true).title(format!(" {title} ").bold())).wrap(Wrap { trim: false }), r);
         }
-        Popup::Input { title, text } => {
+        Popup::Input { title, text, next } => {
             let r = centered(area, 80, 5);
-            let body = vec![Line::from(vec![Span::raw(text.clone()), Span::styled("▏", ACCENT)]), Line::raw(""),
-                            hint("Enter: next · Esc: cancel · ~/ = your home folder")];
+            let keys = if matches!(next, InputFor::SkillPath) { "Enter: next · Esc: cancel · ~/ = your home folder" } else { "Enter: next · Esc: cancel" };
+            let body = vec![Line::from(vec![Span::raw(text.clone()), Span::styled("▏", ACCENT)]), Line::raw(""), hint(keys)];
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(body).block(boxed(true).title(format!(" {title} ").bold())), r);
         }
