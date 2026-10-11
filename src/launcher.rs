@@ -1,6 +1,7 @@
 //! Linux app-menu entry (icon + .desktop). Package managers (AUR, Homebrew) and the Windows .msi ship
 //! their own; the install script and `cargo install` can't run a post-install step, so we add it on
-//! first run instead, and `claude-panel --uninstall` takes everything back out.
+//! first run instead, and `claude-panel --uninstall` takes everything back out (via `cargo uninstall`
+//! for cargo installs, so cargo doesn't think it's still installed).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,8 +47,15 @@ pub fn uninstall() {
         }
     }
     let Ok(exe) = std::env::current_exe() else { return };
+    let cargo_bin = std::env::var_os("CARGO_HOME").map(PathBuf::from).unwrap_or_else(|| crate::data::home().join(".cargo")).join("bin");
     if packaged(&exe) {
         println!("{} belongs to your package manager; remove it there (pacman -R claude-panel, brew uninstall claude-panel).", exe.display());
+    } else if exe.parent() == Some(cargo_bin.as_path()) {
+        // from `cargo install`: let cargo remove it so its install records go too (Windows can't while we run)
+        let ok = !cfg!(windows) && std::process::Command::new("cargo").args(["uninstall", "claude-panel"]).status().is_ok_and(|s| s.success());
+        if !ok {
+            println!("Run `cargo uninstall claude-panel` to finish.");
+        }
     } else if cfg!(windows) {
         println!("Remove Claude Panel from Settings > Apps, or delete {} if you didn't use the .msi.", exe.display());
     } else {
