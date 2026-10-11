@@ -14,10 +14,11 @@ source=("claude-panel-$pkgver.desktop::$_raw/assets/claude-panel.desktop"
         "claude-panel-$pkgver.svg::$_raw/assets/claude-panel.svg")
 source_x86_64=("$url/releases/download/v$pkgver/claude-panel-x86_64-unknown-linux-gnu.tar.xz")
 source_aarch64=("$url/releases/download/v$pkgver/claude-panel-aarch64-unknown-linux-gnu.tar.xz")
-# filled in by `updpkgsums` once the release exists
-sha256sums=('SKIP' 'SKIP')
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+# new version: bump pkgver, then `updpkgsums && makepkg --printsrcinfo > .SRCINFO`
+sha256sums=('94ef56f38da497e5e342687e39359b957ce8c2dedf873ca4162acdd611e6a8c4'
+            'aa41e10805d1ea2c8da3aaac7fded8dcc34f3257b9cec69bc6ee4ee64ac95b9b')
+sha256sums_x86_64=('b92e9e317b7bc69ee6aa174a9090910981e22d78650c39d307f37e4c9f020df2')
+sha256sums_aarch64=('681de1c8dfff665690cfef8888e04eda34cf7427447f2c7d1928dd67fc711d1a')
 
 package() {
   cd "claude-panel-$CARCH-unknown-linux-gnu"

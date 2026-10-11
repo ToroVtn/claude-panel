@@ -1,1 +1,4 @@
 /target
+/packaging/aur/*
+!/packaging/aur/PKGBUILD
+!/packaging/aur/.SRCINFO
